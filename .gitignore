@@ -11,3 +11,4 @@ venv/
 # Secrets / local
 .env
 *.log
+.sbp-data/

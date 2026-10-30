@@ -425,6 +425,13 @@ def make_app(data_dir: str | None = None) -> web.Application:
                     "caps": cconn.caps,
                 },
             })
+            # 客户端几乎总是比设备晚连上来。设备只在自己连上时 emit 一次
+            # session.index，如果不在这里补推一次 store 里已有的会话，
+            # 晚到的客户端就会停在「0 个会话」的空页面上。
+            await cconn.send({
+                "v": VERSION, "type": "evt", "name": "session.index", "ts": now_ms(),
+                "payload": {"sessions": store.index(payload["did"])},
+            })
             try:
                 async for msg in ws:
                     if msg.type is not WSMsgType.TEXT:
