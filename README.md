@@ -81,6 +81,57 @@ git submodule update --init --recursive
 git submodule update --remote sdk
 ```
 
+## 鉴权：三种准入
+
+| 方式 | 配置 | 能看到 |
+|---|---|---|
+| **HMAC 签名**（推荐，一个客户端配 N 台服务器就用它） | `SBP_HMAC_KEYS=keyId1:secret1,keyId2:secret2` | **本服务器上登记的全部设备**（scope = server，did = `*`） |
+| 绑定码换来的 token | `POST /api/bind` | 只看到那一个设备（scope = device） |
+| 本地裸跑 | `SBP_OPEN=1`（且没配 HMAC） | 同 server 级，仅调试用 |
+
+握手帧：
+
+```json
+{"v":"sbp/0.1","id":"1","type":"req","name":"hello",
+ "payload":{"role":"client","auth":{"scheme":"hmac-sha256","keyId":"ecs",
+            "ts":1793498584620,"nonce":"n...","sig":"<hex>"}}}
+```
+
+签名内容 `HMAC-SHA256(secret, "sbp1\n{keyId}\n{ts}\n{nonce}")`，与 tmux 面板、
+微信小程序的实现逐字一致（同一份 keyId/secret 三端通用），ts 偏差超过 5 分钟拒收
+（防重放）。HTTP 侧（`GET /api/devices`）也可以带同样的签名：
+`?keyId=&ts=&nonce=&sig=` 或 `Authorization: SBP-HMAC keyId=..,ts=..,nonce=..,sig=..`。
+
+## 一台服务器、多台设备
+
+server 级客户端（did = `*`）看到的是这台服务器上**所有**设备：
+
+- `session.list` 返回 `groups`（一台设备一组，组里有 `did`）与扁平 `sessions`
+  （每项带 `did`），外加一份 `devices` 摘要；
+- 请求里的 `sid` 由服务端反查归属设备再转发 —— 客户端不用维护 sid→设备 的映射
+  （先查内存映射，兜底扫一遍 store 索引；整台服务器只有一台在线设备时直接认定它）；
+- `session.history` / `session.attach` / `session.answer` / `pane.snapshot`
+  **转发到设备并等它的 res 回传**（服务端自己那份 jsonl 只在设备离线时兜底），
+  所以「历史」是设备现场读 CLI 的 jsonl 回答的，内容与在本机面板里一致；
+  写操作（`session.input` 等）fire-and-forget，立刻回 `{"queued": true}`；
+- 设备上下线会推 `device.state` 事件，客户端据此重拉列表。
+
+## 把 ws 暴露到公网（nginx）
+
+```nginx
+location /sbp-ecs/ {
+    proxy_pass http://127.0.0.1:8787/;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_read_timeout 3600s; proxy_send_timeout 3600s;
+    proxy_buffering off;
+}
+```
+
+⚠️ 客户端访问的是 `/sbp-ecs/ws`：**location 与请求路径都要带末尾斜杠**，
+少了会被 nginx 301，而 WebSocket 握手吃不下 301（表现是一直重连）。
+
 ## 与协议 / 其它仓库的关系
 
 - 帧格式、错误码、安全模型见 [sbp-spec](https://github.com/sbp4ai/sbp-spec)
